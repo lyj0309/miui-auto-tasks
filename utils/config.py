@@ -111,6 +111,16 @@ class OnePush(BaseModel):
     }
     """推送参数"""
 
+# class Ttocr(BaseModel):
+#     """ttorc参数设置"""
+#     app_key: str = ""
+#     """ttocr api_key"""
+#     createTask_url: str = ""
+#     """ttocr创建任务接口"""
+#     createTask_data: Dict = {}
+#     """ttocr创建任务自定义data参数"""
+#     getTaskResult_url: str = ""
+#     """ttocr获取结果接口"""
 
 class Preference(BaseModel):
     """偏好设置"""
@@ -120,6 +130,12 @@ class Preference(BaseModel):
     """极验自定义params参数"""
     geetest_data: Dict = {}
     """极验自定义data参数"""
+    twocaptcha_api_key: str = ""
+    """2captcha api_key"""
+    twocaptcha_userAgent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0"
+    """2captcha userAgent"""
+    twocaptcha_server: str = "2captcha.cn"
+    # ttocr: Ttocr = Ttocr()
 
 class Config(BaseModel):
     """插件数据"""

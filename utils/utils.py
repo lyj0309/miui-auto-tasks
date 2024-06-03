@@ -15,10 +15,48 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import ValidationError
 from tenacity import RetryError, Retrying, stop_after_attempt
 
-from .captcha import get_validate
+from .captcha import get_validate_by_2captcha, get_validate_by_eee
 from .data_model import TokenResultHandler
 from .logger import log
 from .request import post
+
+import importlib
+import subprocess
+import importlib
+import sys
+
+package = '2CAPTCHA-Python'
+import_as = 'twocaptcha'
+# wrong_package = 'twocaptcha'
+
+try:
+    importlib.import_module(import_as)
+except ImportError:
+    print(f"没有找到 {import_as} 包，正在尝试安装 {package} ...")
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+    print(f"{package} 安装成功！")
+
+from twocaptcha import TwoCaptcha
+
+if not hasattr(TwoCaptcha, "geetest"):
+    print(f"检测到已安装错误的 {import_as} 包，正在尝试卸载并安装 {package} ...")
+    subprocess.check_call([sys.executable, '-m', 'pip', 'uninstall', '-y', import_as])
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+    print(f"{package} 安装成功！正在尝试重新加载正确的依赖包")
+    importlib.invalidate_caches()
+    del sys.modules[import_as]
+    importlib.import_module(import_as)
+    from twocaptcha import TwoCaptcha
+    if not hasattr(TwoCaptcha, "geetest"):
+        print(f"尝试加载正确的 {import_as} 包失败，请重新运行脚本，暂不需要做任何其它处理")
+        exit(1)
+    else:
+        print(f"成功重新加载正确的 {import_as} 包，脚本继续运行")
+else:
+    print(f"检测到已安装正确的 {import_as} 包，脚本继续运行")
+
+from .config import ConfigManager
+_conf = ConfigManager.data_obj
 
 PUBLIC_KEY_PEM = '''-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArxfNLkuAQ/BYHzkzVwtu
@@ -92,14 +130,20 @@ def is_incorrect_return(exception: Exception, *addition_exceptions: Type[Excepti
     return isinstance(exception, exceptions) or isinstance(exception.__cause__, exceptions)
 
 
-async def get_token_by_captcha(url: str) -> str | bool:
+async def get_token_by_captcha(url: str,use_2captcha: bool) -> str | bool:
     """通过人机验证码获取TOKEN"""
     try:
         parsed_url = urlparse(url)
         query_params = dict(parse_qsl(parsed_url.query))  # 解析URL参数
         gt = query_params.get("c")  # pylint: disable=invalid-name
         challenge = query_params.get("l")
-        geetest_data = await get_validate(gt, challenge)
+        if use_2captcha:
+            log.info("尝试使用2captcha获取token，使用server："+str(_conf.preference.twocaptcha_server))
+            solver = TwoCaptcha(apiKey=_conf.preference.twocaptcha_api_key,server=_conf.preference.twocaptcha_server)
+            geetest_data = await get_validate_by_2captcha(gt, challenge ,url)
+        else:
+            log.info("尝试使用eee的打码平台获取token，使用server："+str(_conf.preference.geetest_url))
+            geetest_data = await get_validate_by_eee(gt, challenge)
         params = {
             'k': '3dc42a135a8d45118034d1ab68213073',
             'locale': 'zh_CN',
@@ -118,12 +162,44 @@ async def get_token_by_captcha(url: str) -> str | bool:
         result = response.json()
         api_data = TokenResultHandler(result)
         if api_data.success:
+            if use_2captcha:
+                try:
+                    solver.report(geetest_data.taskId,True)
+                    log.success("成功使用2captcha获取token并反馈")
+                except Exception:
+                    pass
+            else:
+                log.success("使用eee的打码平台成功获取token")
             return api_data.token
         elif not api_data.data.get("result"):
             log.error("遇到人机验证码，无法获取TOKEN")
+            log.debug("接口返回："+str(response.text))
+            if use_2captcha:
+                if geetest_data.taskId:
+                    try:
+                        solver.report(geetest_data.taskId,False)
+                        log.info("已向2captcha反馈失败情况")
+                    except Exception:
+                        pass
+                else:
+                    log.error("没有获取到2captcha的taskId，跳过上报错误")
+            else:
+                log.info("使用eee的打码平台获取token失败")
             return False
         else:
             log.error("遇到未知错误，无法获取TOKEN")
+            log.debug("接口返回："+str(response.text))
+            if use_2captcha :
+                if geetest_data.taskId:
+                    try:
+                        solver.report(geetest_data.taskId,False)
+                        log.info("已向2captcha反馈失败情况")
+                    except Exception:
+                        pass
+                else:
+                    log.error("没有获取到2captcha的taskId，跳过上报错误")
+            else:
+                log.info("使用eee的打码平台获取token失败")
             return False
     except Exception:  # pylint: disable=broad-exception-caught
         log.exception("获取TOKEN异常")
@@ -134,8 +210,14 @@ async def get_token_by_captcha(url: str) -> str | bool:
 async def get_token(uid: str) -> str | bool:
     """获取TOKEN"""
     try:
-        for attempt in Retrying(stop=stop_after_attempt(3)):
+        counter = 0
+        for attempt in Retrying(stop=stop_after_attempt(6)):
             with attempt:
+                counter += 1
+                # use_2captcha为true时使用2captcha
+                use_2captcha = counter <= 3
+                # use_2captcha = counter > 3
+                log.info("第"+str(counter)+"次尝试")
                 data = {
                     "type": 0,
                     "startTs": round(time.time() * 1000),
@@ -225,7 +307,7 @@ async def get_token(uid: str) -> str | bool:
                 elif api_data.need_verify:
                     log.error("遇到人机验证码, 尝试调用解决方案")
                     url = api_data.data.get("url")
-                    if token := await get_token_by_captcha(url):
+                    if token := await get_token_by_captcha(url,use_2captcha):
                         return token
                     else:
                         raise ValueError("人机验证失败")
