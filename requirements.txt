@@ -8,3 +8,4 @@ PyYAML==6.0.1
 qrcode==7.4.2
 requests_toolbelt==1.0.0
 tenacity==8.3.0
+twocaptcha==0.0.1
